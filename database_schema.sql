@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'admin')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -160,13 +161,18 @@ WHERE NOT EXISTS (SELECT 1 FROM chapters WHERE chapters.title = new_chapters.tit
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO public.user_profiles (user_id, first_name, last_name)
+    INSERT INTO public.user_profiles (user_id, first_name, last_name, role)
     VALUES (
         NEW.id,
         COALESCE(NEW.raw_user_meta_data->>'first_name', 'Prénom'),
-        COALESCE(NEW.raw_user_meta_data->>'last_name', 'Nom')
+        COALESCE(NEW.raw_user_meta_data->>'last_name', 'Nom'),
+        COALESCE(NEW.raw_user_meta_data->>'role', 'student')
     )
-    ON CONFLICT (user_id) DO NOTHING;
+    ON CONFLICT (user_id) DO UPDATE SET
+        first_name = COALESCE(NEW.raw_user_meta_data->>'first_name', user_profiles.first_name),
+        last_name = COALESCE(NEW.raw_user_meta_data->>'last_name', user_profiles.last_name),
+        role = COALESCE(NEW.raw_user_meta_data->>'role', user_profiles.role),
+        updated_at = NOW();
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
