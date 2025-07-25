@@ -20,12 +20,26 @@ import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
 import toast from 'react-hot-toast';
 
+interface UserManagement {
+  id: string;
+  email: string;
+  created_at: string;
+  email_confirmed_at: string | null;
+  last_sign_in_at: string | null;
+  role: string;
+  first_name: string | null;
+  last_name: string | null;
+  profile_first_name: string | null;
+  profile_last_name: string | null;
+}
+
 const Admin: React.FC = () => {
   const { user, isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState<'chapters' | 'lessons' | 'exercises'>('chapters');
+  const [activeTab, setActiveTab] = useState<'chapters' | 'lessons' | 'exercises' | 'users'>('chapters');
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [exercises, setExercises] = useState<Exercise[]>([]);
+  const [users, setUsers] = useState<UserManagement[]>([]);
   const [loading, setLoading] = useState(true);
   
   // Modal states
@@ -73,7 +87,8 @@ const Admin: React.FC = () => {
     await Promise.all([
       fetchChapters(),
       fetchLessons(),
-      fetchExercises()
+      fetchExercises(),
+      fetchUsers()
     ]);
     setLoading(false);
   };
@@ -117,6 +132,76 @@ const Admin: React.FC = () => {
       setExercises(data || []);
     } catch (error) {
       console.error('Error fetching exercises:', error);
+    }
+  };
+
+  const fetchUsers = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('user_management')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      setUsers(data || []);
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      toast.error('Erreur lors du chargement des utilisateurs');
+    }
+  };
+
+  const promoteToAdmin = async (email: string) => {
+    try {
+      const { error } = await supabase.rpc('promote_user_to_admin', { user_email: email });
+      
+      if (error) throw error;
+      
+      toast.success(`Utilisateur ${email} promu en admin avec succès`);
+      await fetchUsers(); // Refresh the users list
+    } catch (error: any) {
+      console.error('Error promoting user:', error);
+      toast.error(error.message || 'Erreur lors de la promotion');
+    }
+  };
+
+  const demoteFromAdmin = async (email: string) => {
+    try {
+      // First find the user
+      const userToUpdate = users.find(u => u.email === email);
+      if (!userToUpdate) {
+        toast.error('Utilisateur non trouvé');
+        return;
+      }
+
+      // Update user metadata to student
+      const { error: metadataError } = await supabase.auth.admin.updateUserById(
+        userToUpdate.id,
+        { user_metadata: { role: 'student' } }
+      );
+
+      if (metadataError) {
+        // Fallback: update profile directly
+        const { error: profileError } = await supabase
+          .from('user_profiles')
+          .update({ role: 'student' })
+          .eq('user_id', userToUpdate.id);
+          
+        if (profileError) throw profileError;
+      }
+
+      // Update the profile table
+      const { error: profileError } = await supabase
+        .from('user_profiles')
+        .update({ role: 'student' })
+        .eq('user_id', userToUpdate.id);
+
+      if (profileError) throw profileError;
+
+      toast.success(`Utilisateur ${email} rétrogradé en étudiant avec succès`);
+      await fetchUsers(); // Refresh the users list
+    } catch (error: any) {
+      console.error('Error demoting user:', error);
+      toast.error(error.message || 'Erreur lors de la rétrogradation');
     }
   };
 
@@ -428,7 +513,8 @@ const Admin: React.FC = () => {
           {[
             { id: 'chapters', label: 'Chapitres', count: chapters.length },
             { id: 'lessons', label: 'Leçons', count: lessons.length },
-            { id: 'exercises', label: 'Exercices', count: exercises.length }
+            { id: 'exercises', label: 'Exercices', count: exercises.length },
+            { id: 'users', label: 'Utilisateurs', count: users.length }
           ].map((tab) => (
             <button
               key={tab.id}
@@ -905,6 +991,123 @@ const Admin: React.FC = () => {
                 Annuler
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Users Tab */}
+      {activeTab === 'users' && (
+        <div>
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-xl font-bold text-gray-900">Gestion des Utilisateurs</h2>
+            <div className="text-sm text-gray-600">
+              Total: {users.length} utilisateurs
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Utilisateur
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Email
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Rôle
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Statut
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Dernière connexion
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {users.map((userItem) => (
+                    <tr key={userItem.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">
+                          {userItem.profile_first_name || userItem.first_name || 'N/A'} {userItem.profile_last_name || userItem.last_name || ''}
+                        </div>
+                        <div className="text-sm text-gray-500">
+                          ID: {userItem.id.substring(0, 8)}...
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm text-gray-900">{userItem.email}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          userItem.role === 'admin' 
+                            ? 'bg-purple-100 text-purple-800' 
+                            : 'bg-green-100 text-green-800'
+                        }`}>
+                          {userItem.role === 'admin' ? 'Admin' : 'Étudiant'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          userItem.email_confirmed_at 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {userItem.email_confirmed_at ? 'Confirmé' : 'En attente'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {userItem.last_sign_in_at 
+                          ? new Date(userItem.last_sign_in_at).toLocaleDateString('fr-FR', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })
+                          : 'Jamais connecté'
+                        }
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        {userItem.role !== 'admin' && userItem.id !== user?.id && (
+                          <button
+                            onClick={() => promoteToAdmin(userItem.email)}
+                            className="text-purple-600 hover:text-purple-900 mr-4"
+                            title="Promouvoir en admin"
+                          >
+                            Promouvoir
+                          </button>
+                        )}
+                        {userItem.role === 'admin' && userItem.id !== user?.id && (
+                          <button
+                            onClick={() => demoteFromAdmin(userItem.email)}
+                            className="text-orange-600 hover:text-orange-900 mr-4"
+                            title="Rétrograder en étudiant"
+                          >
+                            Rétrograder
+                          </button>
+                        )}
+                        {userItem.id === user?.id && (
+                          <span className="text-gray-400">Vous</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {users.length === 0 && (
+              <div className="text-center py-12">
+                <div className="text-gray-500 text-lg">Aucun utilisateur trouvé</div>
+              </div>
+            )}
           </div>
         </div>
       )}

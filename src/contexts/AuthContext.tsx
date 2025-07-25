@@ -72,7 +72,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         console.log('User signed in or token refreshed, fetching profile...');
-        setLoading(true);
         await fetchUserProfile(session.user.id);
       }
 
@@ -97,7 +96,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const loadingTimeout = setTimeout(() => {
         console.warn('Auth loading timeout reached, setting loading to false');
         setLoading(false);
-      }, 5000); // 5 seconds timeout
+      }, 10000); // 10 seconds timeout
 
       return () => clearTimeout(loadingTimeout);
     }
@@ -113,12 +112,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (userError) {
         console.error('Error getting user:', userError);
         setUser(null);
+        setLoading(false);
         return;
       }
 
       if (!userData.user) {
         console.log('No user found');
         setUser(null);
+        setLoading(false);
         return;
       }
 
@@ -139,6 +140,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         
         const firstName = userData.user.user_metadata?.first_name || 'Prénom';
         const lastName = userData.user.user_metadata?.last_name || 'Nom';
+        const role = userData.user.user_metadata?.role || 'student';
         
         try {
           const { data: newProfile, error: createError } = await supabase
@@ -146,34 +148,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             .insert({
               user_id: userId,
               first_name: firstName,
-              last_name: lastName
+              last_name: lastName,
+              role: role
             })
             .select()
             .single();
             
           if (createError) {
             console.warn('Could not create profile:', createError);
+            // Still continue with basic user data
           } else {
             console.log('Profile created successfully:', newProfile);
           }
         } catch (createError) {
           console.warn('Profile creation failed:', createError);
+          // Still continue with basic user data
+        }
+        
+        // Refetch the profile after creation attempt
+        const { data: refetchedProfile } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle();
+          
+        if (refetchedProfile) {
+          console.log('Profile refetched successfully:', refetchedProfile);
         }
       }
 
-      if (profileError && typeof profileError === 'object' && 'code' in profileError && profileError.code !== 'PGRST116') { 
+      if (profileError && profileError.code !== 'PGRST116') { 
         console.error('Error fetching user profile:', profileError);
       }
 
-      // Get the role from user metadata or profile, fallback to 'student'
-      const userRole = userData.user.user_metadata?.role || profile?.role || 'student';
+      // Get the final profile data
+      const finalProfile = profile || await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle()
+        .then(({ data }) => data);
+
+      // Get the role from profile first, then user metadata, fallback to 'student'
+      const userRole = finalProfile?.role || userData.user.user_metadata?.role || 'student';
 
       const newUser: User = {
         id: userData.user.id,
         email: userData.user.email!,
         role: userRole,
         created_at: userData.user.created_at,
-        profile: profile || undefined
+        profile: finalProfile || undefined
       };
 
       console.log('Setting user:', newUser);
@@ -194,13 +218,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             profile: undefined
           };
           setUser(basicUser);
-          return;
         }
       } catch (basicError) {
         console.error('Could not set basic user:', basicError);
+        setUser(null);
       }
-      
-      setUser(null);
     } finally {
       console.log('Setting loading to false');
       setLoading(false);
@@ -234,27 +256,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // If user is created but no session (email confirmation required)
       if (data.user && !data.session) {
         toast.success('Compte créé! Vérifiez votre email pour confirmer votre compte.');
+        setLoading(false);
+        return;
       } 
       // If user is created and session exists (auto-confirmed)
       else if (data.user && data.session) {
-        toast.success('Compte créé avec succès!');
+        console.log('User auto-confirmed, creating profile...');
+        
+        // Wait a moment for the trigger to potentially create the profile
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Try to create profile manually if the trigger fails
         try {
           const { error: profileError } = await supabase
             .from('user_profiles')
-            .insert({
+            .upsert({
               user_id: data.user.id,
               first_name: firstName,
-              last_name: lastName
+              last_name: lastName,
+              role: 'student'
+            }, {
+              onConflict: 'user_id'
             });
             
-          if (profileError && profileError.code !== '23505') { // 23505 is unique constraint violation (profile already exists)
-            console.warn('Profile creation warning:', profileError);
+          if (profileError) {
+            console.warn('Profile upsert warning:', profileError);
+          } else {
+            console.log('Profile created/updated successfully');
           }
         } catch (profileError) {
           console.warn('Could not create profile, but signup succeeded:', profileError);
         }
+        
+        toast.success('Compte créé avec succès!');
+        // The auth state change will handle setting the user
       }
     } catch (error: unknown) {
       console.error('Signup error:', error);
@@ -274,7 +309,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       throw error;
     } finally {
-      setLoading(false);
+      // Don't set loading to false here if there's a session, let the auth state change handle it
+      if (!supabase.auth.getSession()) {
+        setLoading(false);
+      }
     }
   };
 
@@ -303,11 +341,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       console.log('Signin successful');
       toast.success('Connexion réussie!');
+      // Don't set loading to false here, let the auth state change handle it
     } catch (error: unknown) {
       console.error('Signin error:', error);
-      throw error;
-    } finally {
       setLoading(false);
+      throw error;
     }
   };
 
